@@ -1,0 +1,186 @@
+diff --git a/ps5-kstuff/main.c b/ps5-kstuff/main.c
+index 7df5d75..3b90c3b 100644
+--- a/ps5-kstuff/main.c
++++ b/ps5-kstuff/main.c
+@@ -1489,16 +1489,42 @@ uint64_t bench(void)
+ #define INT1_IST_INDEX 4
+ #define INT3_IST_INDEX 7
+ 
++static void kstage(const char *m, long v)
++{
++    char b[160];
++    int n = 0;
++    const char *p = "<118>[kstage] ";
++    while (*p && n < (int)sizeof(b) - 40) b[n++] = *p++;
++    while (*m && n < (int)sizeof(b) - 40) b[n++] = *m++;
++    if (v >= 0) {
++        char t[24]; int k = 0;
++        unsigned long u = (unsigned long)v;
++        b[n++] = '=';
++        if (!u) b[n++] = '0';
++        while (u) { t[k++] = (char)('0' + (u % 10)); u /= 10; }
++        while (k) b[n++] = t[--k];
++    }
++    b[n++] = '\n';
++    b[n] = 0;
++    syscall(0x259, 7, b, 0);
++}
++
+ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+ {
++    kstage("entry", -1);
+     snprintf = dlsym((void*)0x2, "snprintf");
++    kstage("dlsym", -1);
+ 
+-    if(r0gdb_init(ds, a, b, c, d))
+     {
++        int rc = r0gdb_init(ds, a, b, c, d);
++        kstage("r0gdb", rc);
++        if(rc)
++        {
+ #ifndef FIRMWARE_PORTING
+         notify("your firmware is not supported (prosper0gdb)");
+         return 1;
+ #endif
++        }
+     }
+ #ifdef PS5KEK
+     extern uint64_t p_syscall;
+@@ -1507,14 +1533,18 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+ #else
+     p_kekcall = (char*)dlsym((void*)0x1, "getpid") + 7;
+ #endif
++    kstage("pre-kekcheck", -1);
+     if(!kekcall(0, 0, 0, 0, 0, 0, 0xffffffff00000027))
+     {
+         notify("ps5-kstuff is already loaded");
+         return 1;
+     }
++    kstage("kekcheck-ok", -1);
+ 
+     size_t n_shellcore_patches;
++    kstage("shellcore-begin", -1);
+     uint64_t shellcore_eh_frame_offset = get_eh_frame_offset("/system/vsh/SceShellCore.elf");
++    kstage("eh_frame", (long)shellcore_eh_frame_offset);
+     const struct shellcore_patch* shellcore_patches = get_shellcore_patches(&n_shellcore_patches);
+     if(n_shellcore_patches && !shellcore_patches)
+     {
+@@ -1541,11 +1571,14 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+     uint64_t int13_handler;
+     copyout(&int13_handler, IDT+16*13, 2);
+     copyout((char*)&int13_handler + 2, IDT+16*13+6, 6);
++    kstage("patches-done", -1);
+ #ifndef FIRMWARE_PORTING
+     dbg_enter();
+ #endif
++    kstage("dbg-enter-done", -1);
+     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"allocating kernel memory... ", (uintptr_t)28);
+ 
++kstage("syshook-begin", -1);
+ #ifdef USE_INT3_SYSCALL_HOOK
+     // 2.xx and later use a CFI-table thunk which jumps to an INT3-filled
+     // function.  1.xx dispatches sy_call directly, so its verified retail
+@@ -1582,10 +1615,13 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+     }
+ #endif
+ 
++    kstage("syshook-done", -1);
+     for(int i = 0; i < 0x300; i += 2)
+         r0gdb_kmalloc(0x100);
+     kmalloc_add_block(KMALLOC_CHUNK_SIZE);
++    kstage("kmalloc-done", -1);
+     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"done\n", (uintptr_t)5);
++    kstage("ctable-begin", -1);
+     uint64_t comparison_table_base = (uint64_t)kmalloc(131072);
+     uint64_t comparison_table = ((comparison_table_base - 1) | 65535) + 1;
+     uint8_t* comparison_table_data = mmap(0, 65536, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
+@@ -1595,12 +1631,19 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+     //trying to copyin the whole 64k at once hangs here for some reason
+     for(size_t i = 0; i < 256; i++)
+         copyin(comparison_table+256*i, comparison_table_data+256*i, 256);
++    kstage("ctable-done", -1);
+     uint64_t shared_area_kernel;
+     if(comparison_table - comparison_table_base > SHARED_AREA_SIZE)
+         shared_area_kernel = comparison_table - SHARED_AREA_SIZE;
+     else
+         shared_area_kernel = comparison_table + 65536;
+     kmemzero((void*)shared_area_kernel, SHARED_AREA_SIZE);
++    {
++        uint64_t kd = kdata_base;
++        kmemcpy((char*)shared_area_kernel + __builtin_offsetof(struct shared_area_layout, kdata_base_pub),
++                &kd, sizeof(kd));
++    }
++    kstage("shared-done", -1);
+     uint64_t kernel_dmap = get_dmap_base();
+     uint64_t kernel_cr3 = r0gdb_read_cr3();
+     uint64_t uelf_virt_base = (find_empty_pml4_index(0) << 39) | (-1ull << 48);
+@@ -1713,8 +1756,12 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+         uelf_bases[cpu] = (uintptr_t)uelf;
+         kelf_bases[cpu] = (uint64_t)kelf;
+         kelf_entries[cpu] = (uint64_t)entry;
++        if(cpu == 0) kstage("cpu0-done", -1);
+     }
++    kstage("uelf-all-done", -1);
++    kstage("uelf-loop-done", -1);
+     r0gdb_wrmsr(0xc0000084, r0gdb_rdmsr(0xc0000084) | 0x100);
++    kstage("idt-begin", -1);
+     gdb_remote_syscall("write", 3, 0, (uintptr_t)1, (uintptr_t)"done loading\npatching idt... ", (uintptr_t)29);
+     uint64_t cr3 = r0gdb_read_cr3();
+     
+@@ -1895,5 +1942,6 @@ int main(void* ds, int a, int b, uintptr_t c, uintptr_t d)
+     return 0;
+ #endif
+     asm volatile("ud2");
++    kstage("init-complete", -1);
+     return 0;
+ }
+diff --git a/ps5-kstuff/uelf/kekcall.c b/ps5-kstuff/uelf/kekcall.c
+index 525c774..cf7e336 100644
+--- a/ps5-kstuff/uelf/kekcall.c
++++ b/ps5-kstuff/uelf/kekcall.c
+@@ -99,6 +99,29 @@ int handle_kekcall(uint64_t* regs, uint64_t* args, uint32_t nr)
+             args[RAX] = result;
+         return err;
+     }
++    else if(nr == 8)
++    {
++        /* KREAD(dst_user, kva, size): read-only kernel memory -> caller.
++         * Diagnostic primitive for locating kernel text/rodata sites. */
++        uint64_t dst = args[RDI];
++        uint64_t src = args[RSI];
++        uint64_t sz = args[RDX];
++        static uint8_t bounce[65536];
++        if(!sz || sz > sizeof(bounce))
++            return EINVAL;
++        if(copy_from_kernel(bounce, src, sz))
++            return EFAULT;
++        if(copy_to_kernel(dst, bounce, sz))
++            return EFAULT;
++        args[RAX] = sz;
++        return 0;
++    }
++    else if(nr == 9)
++    {
++        /* Publish the runtime kernel data anchor (kdata_base). */
++        args[RAX] = shared_area.kdata_base_pub;
++        return 0;
++    }
+     else if(nr == 0xffffffff)
+     {
+         args[RAX] = 0;
+diff --git a/ps5-kstuff/uelf/shared_area.h b/ps5-kstuff/uelf/shared_area.h
+index 3f5ba0f..26cd805 100644
+--- a/ps5-kstuff/uelf/shared_area.h
++++ b/ps5-kstuff/uelf/shared_area.h
+@@ -429,7 +429,10 @@ struct shared_area_layout
+ {
+     uint64_t bitmask;
+     uint64_t ready_mask;
+-    char pad[16];
++    /* Kernel-side anchors published at startup (read-only for the UELF).
++     * Occupies the former 16-byte pad, so the shared-area size is unchanged. */
++    uint64_t kdata_base_pub;
++    uint64_t kdata_base_reserved;
+     uint8_t key_data[SHARED_FAKE_KEY_SLOTS][32];
+     struct kstuff_ppr_plaintext_latch
+         ppr_plaintext_latches[SHARED_PPR_PLAINTEXT_LATCH_SLOTS];
